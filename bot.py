@@ -22,8 +22,6 @@ nest_asyncio.apply()  # To run async inside sync
 # Telethon client session name
 SESSION_NAME = 'session_name2'
 
-
-
 def clean_question(quest):
     return re.sub(r'^\[\d+/\d+\]\s*', '', quest)
 
@@ -148,72 +146,104 @@ async def addpoll_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 
+from telethon.tl.functions.messages import SendVoteRequest
 
-async def fetch_and_answer_polls(channel_link, excel_filename):
-    from telethon.sync import TelegramClient
-
+async def fetch_and_answer_polls(channel_link,bot, excel_filename):
     async with TelegramClient(SESSION_NAME, API_ID, API_HASH) as client:
         entity = await client.get_entity(channel_link)
-        data = []
-
+        new_polls = []
+        existing_df = pd.DataFrame()
         async for message in client.iter_messages(entity, limit=500):
-            if message.poll and message.poll.poll and message.poll.poll.answers:
-                options = [opt.text for opt in message.poll.poll.answers]
-                chosen_index = random.randint(0, len(options) - 1)
-                chosen_option_bytes = message.poll.poll.answers[chosen_index].option  # <-- use this
 
+            if not message.poll or not message.poll.poll:
+                continue
+
+            poll = message.poll.poll
+            question = poll.question
+            options = [opt.text for opt in poll.answers]
+
+            already_answered = False
+            chosen_index = None
+            your_answer = ""
+            status = ""
+
+            try:
+                if message.poll.results:
+                    for i, res in enumerate(message.poll.results.results):
+                        if res.chosen:
+                            already_answered = True
+                            chosen_index = i
+                            your_answer = options[i]
+                            status = "Already Answered"
+                            print(f"⏩ Already answered: '{question}' with option {your_answer}")
+                            break
+            except Exception as e:
+                print(f"⚠️ Failed checking chosen answer: {e}")
+
+            if not already_answered:
                 try:
+                    chosen_index = random.randint(0, len(options) - 1)
+                    chosen_option_bytes = poll.answers[chosen_index].option
+
                     await client(SendVoteRequest(
                         peer=message.chat_id,
                         msg_id=message.id,
-                    options=[chosen_option_bytes]
+                        options=[chosen_option_bytes]
                     ))
-                    print(f"Voted option {chosen_index} ('{options[chosen_index]}') on poll: {message.poll.poll.question}")
+
+                    your_answer = options[chosen_index]
+                    status = "Answered"
+                    print(f"✅ Voted: '{question}' → '{your_answer}'")
                     await asyncio.sleep(2)
 
-                    data.append({
-                    "question": message.poll.poll.question,
-                    "option1": options[0] if len(options) > 0 else "",
-                "option2": options[1] if len(options) > 1 else "",
-                "option3": options[2] if len(options) > 2 else "",
-                "option4": options[3] if len(options) > 3 else "",
-                "your_answer": options[chosen_index]
-                })
                 except Exception as e:
-                    print(f"Error answering poll: {e}")
-                    continue
-                
+                    print(f"❌ Error voting: {e}")
+                    your_answer = "Voting Failed"
+                    status = "Failed"
 
-        df = pd.DataFrame(data)
-        df.to_excel(excel_filename, index=False)
+            # Save using parse_poll
+            try:
+                df_poll = parse_poll(message)
+                if df_poll is not None:
+                    # Check if pollid already exists
+                    poll_id = df_poll['pollid'].iloc[0]
+                    if existing_df.empty or poll_id not in existing_df['pollid'].values:
+                        new_polls.append(df_poll)
+            except Exception as e:
+                print(f"❌ Failed saving poll data: {e}")
+        if new_polls:
+            combined = pd.concat(new_polls, ignore_index=True)
+            if not existing_df.empty:
+                combined = pd.concat([existing_df, combined], ignore_index=True)
 
-        
+            combined.to_excel(excel_filename, index=False)
+            send_result = await send_file_to_group(bot, excel_filename)
+
 import traceback
 
 async def answerandsendpoll_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) != 1:
-        await update.message.reply_text("Usage: /answerandsendpoll <channel_link>")
+        await update.message.reply_text("Usage: /ans <channel_link>")
         return
 
     channel_link = context.args[0]
-    filename = "answered_polls.xlsx"
+    filename = "ChannelQuiz.xlsx"
     await update.message.reply_text(f"Fetching answered polls from {channel_link}...")
 
     try:
-        await fetch_and_answer_polls(channel_link, filename)
-        await context.bot.send_document(chat_id=update.effective_chat.id, document=InputFile(filename))
-        os.remove(filename)
+        await fetch_and_answer_polls(channel_link,context.bot, filename)
+        if os.path.exists(filename):
+            await context.bot.send_document(chat_id=update.effective_chat.id, document=InputFile(filename))
+        else:
+            await update.message.reply_text("⚠️ No valid polls were found or answered. Nothing to export.")
+
     except Exception as e:
         tb = traceback.format_exc()
         print(f"Failed: {e}\n\n{tb}")
 
 
-
 async def main():
-    # Create your Telegram Bot with your Bot Token
-    # Replace 'YOUR_TELEGRAM_BOT_TOKEN' with your actual bot token from BotFather
     application = ApplicationBuilder().token('7544102526:AAH61kptKH3-2RyXuNpDyX2ohvE1dN3CC4s').build()
-
     application.add_handler(CommandHandler("addpoll", addpoll_command))
     application.add_handler(CommandHandler("ans", answerandsendpoll_command))
 
