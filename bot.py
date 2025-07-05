@@ -7,6 +7,10 @@ from telegram import InputFile
 from telethon import TelegramClient
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+import random
+from telethon.tl.functions.messages import SendVoteRequest
+
+
 
 # Your Telegram API credentials (from my.telegram.org)
 API_ID = 21993163
@@ -17,6 +21,8 @@ nest_asyncio.apply()  # To run async inside sync
 
 # Telethon client session name
 SESSION_NAME = 'session_name2'
+
+
 
 def clean_question(quest):
     return re.sub(r'^\[\d+/\d+\]\s*', '', quest)
@@ -139,12 +145,78 @@ async def addpoll_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(result)
 
+
+
+
+
+async def fetch_and_answer_polls(channel_link, excel_filename):
+    from telethon.sync import TelegramClient
+
+    async with TelegramClient(SESSION_NAME, API_ID, API_HASH) as client:
+        entity = await client.get_entity(channel_link)
+        data = []
+
+        async for message in client.iter_messages(entity, limit=500):
+            if message.poll and message.poll.poll and message.poll.poll.answers:
+                options = [opt.text for opt in message.poll.poll.answers]
+                chosen_index = random.randint(0, len(options) - 1)
+                chosen_option_bytes = message.poll.poll.answers[chosen_index].option  # <-- use this
+
+                try:
+                    await client(SendVoteRequest(
+                        peer=message.chat_id,
+                        msg_id=message.id,
+                    options=[chosen_option_bytes]
+                    ))
+                    print(f"Voted option {chosen_index} ('{options[chosen_index]}') on poll: {message.poll.poll.question}")
+                    await asyncio.sleep(2)
+
+                    data.append({
+                    "question": message.poll.poll.question,
+                    "option1": options[0] if len(options) > 0 else "",
+                "option2": options[1] if len(options) > 1 else "",
+                "option3": options[2] if len(options) > 2 else "",
+                "option4": options[3] if len(options) > 3 else "",
+                "your_answer": options[chosen_index]
+                })
+                except Exception as e:
+                    print(f"Error answering poll: {e}")
+                    continue
+                
+
+        df = pd.DataFrame(data)
+        df.to_excel(excel_filename, index=False)
+
+        
+import traceback
+
+async def answerandsendpoll_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if len(context.args) != 1:
+        await update.message.reply_text("Usage: /answerandsendpoll <channel_link>")
+        return
+
+    channel_link = context.args[0]
+    filename = "answered_polls.xlsx"
+    await update.message.reply_text(f"Fetching answered polls from {channel_link}...")
+
+    try:
+        await fetch_and_answer_polls(channel_link, filename)
+        await context.bot.send_document(chat_id=update.effective_chat.id, document=InputFile(filename))
+        os.remove(filename)
+    except Exception as e:
+        tb = traceback.format_exc()
+        print(f"Failed: {e}\n\n{tb}")
+
+
+
 async def main():
     # Create your Telegram Bot with your Bot Token
     # Replace 'YOUR_TELEGRAM_BOT_TOKEN' with your actual bot token from BotFather
     application = ApplicationBuilder().token('7544102526:AAH61kptKH3-2RyXuNpDyX2ohvE1dN3CC4s').build()
 
     application.add_handler(CommandHandler("addpoll", addpoll_command))
+    application.add_handler(CommandHandler("ans", answerandsendpoll_command))
+
 
     print("Bot is polling...")
     await application.run_polling()
