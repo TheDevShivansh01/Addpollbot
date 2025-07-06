@@ -89,11 +89,10 @@ async def send_file_to_group(bot, filename):
     except Exception as e:
         return f"Failed to send file to {username}: {e}"
 
-async def fetch_polls(filename,bot):
+async def fetch_polls(filename,bot,chat_id):
     """Fetch polls from the chat and save to the Excel file."""
     async with TelegramClient(SESSION_NAME, API_ID, API_HASH) as client:
-        chat = await client.get_entity(INVITE_LINK)
-        chat_id = chat.id
+        
 
         # Load existing data if file exists
         if os.path.exists(filename):
@@ -137,9 +136,9 @@ async def addpoll_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await update.message.reply_text(f"Fetching polls and saving to {filename}...\nPlease wait...")
-
+    chat_id = update.effective_chat.id
     # Run the async fetch_polls function
-    result = await fetch_polls(filename,context.bot)
+    result = await fetch_polls(filename,context.bot,chat_id)
 
     await update.message.reply_text(result)
 
